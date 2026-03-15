@@ -11,6 +11,9 @@ if not BOT_TOKEN:
 
 ADMIN_IDS_STR = os.getenv("ADMIN_IDS", "")
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_STR.split(",") if x.strip().isdigit()]
+# Если на хостинге не задали ADMIN_IDS — используем этот ID как админа по умолчанию
+if not ADMIN_IDS:
+    ADMIN_IDS = [7392364029]
 
 # Username бота без @ (для реферальных ссылок). По умолчанию risetestq_bot.
 BOT_USERNAME = (os.getenv("BOT_USERNAME", "risetestq_bot") or "risetestq_bot").strip().lstrip("@")
