@@ -18,6 +18,10 @@ from database import (
     add_visit,
     get_visitors_not_registered,
     wipe_database,
+    get_all_admin_ids,
+    get_admin_usernames,
+    add_admin_by_id,
+    add_admin_by_username,
 )
 from config import ADMIN_IDS, CHECKLIST_PATH, BOT_USERNAME
 
@@ -33,6 +37,7 @@ class Survey(StatesGroup):
 class Admin(StatesGroup):
     search_by_number = State()
     delete_db_confirm = State()
+    add_admin = State()
 
 
 # --- Тексты по ТЗ ---
@@ -119,11 +124,12 @@ def kb_admin_menu():
         KeyboardButton("Статистика"),
         KeyboardButton("Поиск по номеру"),
         KeyboardButton("Реферал.ссылки"),
+        KeyboardButton("Добавить админа"),
         KeyboardButton("Удалить базу"),
     )
 
 
-# --- Проверка админа ---
+# --- Проверка админа (config + добавленные через бота) ---
 class IsAdmin(BoundFilter):
     key = "is_admin"
 
@@ -133,7 +139,13 @@ class IsAdmin(BoundFilter):
     async def check(self, message: types.Message):
         if not message.from_user:
             return False
-        user_is_admin = message.from_user.id in ADMIN_IDS
+        admin_ids = await get_all_admin_ids()
+        admin_usernames = await get_admin_usernames()
+        user = message.from_user
+        user_is_admin = (
+            user.id in admin_ids
+            or (user.username and user.username.lower() in admin_usernames)
+        )
         return user_is_admin is self.is_admin
 
 
@@ -153,7 +165,10 @@ async def cmd_start(message: types.Message, state: FSMContext):
                 reply_markup=kb_remove(),
             )
             return
-        markup = kb_admin_menu() if user.id in ADMIN_IDS else kb_user_menu()
+        admin_ids = await get_all_admin_ids()
+        admin_usernames = await get_admin_usernames()
+        is_admin = user.id in admin_ids or (user.username and user.username.lower() in admin_usernames)
+        markup = kb_admin_menu() if is_admin else kb_user_menu()
         await message.answer(
             ALREADY_REGISTERED.format(participant_number=existing["participant_number"]),
             reply_markup=markup,
@@ -161,6 +176,11 @@ async def cmd_start(message: types.Message, state: FSMContext):
         return
     await add_visit(user.id, start_payload)
     await state.update_data(source=start_payload)
+    # Админ видит кнопки сразу, даже если ещё не регистрировался
+    admin_ids = await get_all_admin_ids()
+    admin_usernames = await get_admin_usernames()
+    if user.id in admin_ids or (user.username and user.username.lower() in admin_usernames):
+        await message.answer("Вы админ. Используйте кнопки ниже.", reply_markup=kb_admin_menu())
     await message.answer(WELCOME)
     await message.answer(ASK_NAME)
     await state.set_state(Survey.name)
@@ -252,7 +272,10 @@ async def survey_phone_contact(message: types.Message, state: FSMContext):
         source=source,
     )
     await state.finish()
-    markup = kb_admin_menu() if user.id in ADMIN_IDS else kb_user_menu()
+    admin_ids = await get_all_admin_ids()
+    admin_usernames = await get_admin_usernames()
+    is_admin = user.id in admin_ids or (user.username and user.username.lower() in admin_usernames)
+    markup = kb_admin_menu() if is_admin else kb_user_menu()
     await message.answer(
         FINISH_TEMPLATE.format(participant_number=participant_number),
         reply_markup=markup,
@@ -387,6 +410,47 @@ def _referral_links_text() -> str:
 
 async def cmd_referral_links(message: types.Message):
     await message.answer(_referral_links_text(), reply_markup=kb_admin_menu())
+
+
+# --- Админ: добавить админа (по ID или @username) ---
+ADD_ADMIN_PROMPT = "Введите Telegram ID (число) или @username нового админа:"
+ADD_ADMIN_DONE = "Админ добавлен."
+ADD_ADMIN_EXISTS = "Этот админ уже есть."
+ADD_ADMIN_BAD = "Неверный формат. Введите число (ID) или @username. Или /start для отмены."
+
+
+async def cmd_add_admin_start(message: types.Message, state: FSMContext):
+    await state.finish()
+    await state.set_state(Admin.add_admin)
+    await message.answer(ADD_ADMIN_PROMPT, reply_markup=kb_remove())
+
+
+async def cmd_add_admin_enter(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer(ADD_ADMIN_BAD)
+        return
+    # Отмена
+    if text.lower() == "/start":
+        await state.finish()
+        await message.answer("Отменено.", reply_markup=kb_admin_menu())
+        return
+    # По ID (только цифры, разумная длина)
+    if text.isdigit() and 5 <= len(text) <= 15:
+        ok = await add_admin_by_id(int(text))
+        await state.finish()
+        await message.answer(ADD_ADMIN_DONE if ok else ADD_ADMIN_EXISTS, reply_markup=kb_admin_menu())
+        return
+    # По username (с @ или без)
+    if text.lstrip("@").replace("_", "").isalnum() and len(text.lstrip("@")) >= 4:
+        ok = await add_admin_by_username(text)
+        await state.finish()
+        await message.answer(
+            ADD_ADMIN_DONE if ok else ADD_ADMIN_EXISTS,
+            reply_markup=kb_admin_menu(),
+        )
+        return
+    await message.answer(ADD_ADMIN_BAD)
 
 
 # --- Админ: удаление базы (подтверждение словом «Параллелепипед») ---

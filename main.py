@@ -31,6 +31,8 @@ from handlers import (
     cmd_search_start,
     cmd_search_result,
     cmd_referral_links,
+    cmd_add_admin_start,
+    cmd_add_admin_enter,
     cmd_delete_db_start,
     cmd_delete_db_confirm,
 )
@@ -53,6 +55,19 @@ def setup_dispatcher(dp: Dispatcher) -> None:
     # Выйти из конкурса (повторная регистрация невозможна)
     dp.register_message_handler(cmd_leave_contest, Text(equals="Выйти из конкурса"), state="*")
 
+    # Админ-кнопки обрабатываем в любом состоянии (state="*"), чтобы срабатывали до анкеты
+    dp.register_message_handler(cmd_export, Command("export"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_export, Text(equals="Выгрузить Excel"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_stats, Command("stats"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_stats, Text(equals="Статистика"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_search_start, Text(equals="Поиск по номеру"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_search_result, state=Admin.search_by_number, is_admin=True)
+    dp.register_message_handler(cmd_referral_links, Text(equals="Реферал.ссылки"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_add_admin_start, Text(equals="Добавить админа"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_add_admin_enter, state=Admin.add_admin, is_admin=True)
+    dp.register_message_handler(cmd_delete_db_start, Text(equals="Удалить базу"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_delete_db_confirm, state=Admin.delete_db_confirm, is_admin=True)
+
     # Анкета по шагам
     dp.register_message_handler(survey_name, state=Survey.name)
     dp.register_message_handler(survey_age, state=Survey.age)
@@ -64,17 +79,6 @@ def setup_dispatcher(dp: Dispatcher) -> None:
         state=Survey.phone,
     )
     dp.register_message_handler(survey_phone_text, state=Survey.phone)
-
-    # Админ: выгрузка, статистика, поиск по номеру
-    dp.register_message_handler(cmd_export, Command("export"), is_admin=True)
-    dp.register_message_handler(cmd_export, Text(equals="Выгрузить Excel"), is_admin=True)
-    dp.register_message_handler(cmd_stats, Command("stats"), is_admin=True)
-    dp.register_message_handler(cmd_stats, Text(equals="Статистика"), is_admin=True)
-    dp.register_message_handler(cmd_search_start, Text(equals="Поиск по номеру"), is_admin=True)
-    dp.register_message_handler(cmd_search_result, state=Admin.search_by_number, is_admin=True)
-    dp.register_message_handler(cmd_referral_links, Text(equals="Реферал.ссылки"), is_admin=True)
-    dp.register_message_handler(cmd_delete_db_start, Text(equals="Удалить базу"), is_admin=True)
-    dp.register_message_handler(cmd_delete_db_confirm, state=Admin.delete_db_confirm, is_admin=True)
 
 
 async def main() -> None:

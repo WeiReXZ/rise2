@@ -5,7 +5,7 @@ import aiosqlite
 from pathlib import Path
 from typing import Optional
 
-from config import DB_PATH
+from config import DB_PATH, ADMIN_IDS as CONFIG_ADMIN_IDS
 
 INIT_SQL = """
 CREATE TABLE IF NOT EXISTS participants (
@@ -33,12 +33,20 @@ CREATE TABLE IF NOT EXISTS visits (
 );
 """
 
+INIT_ADMINS_SQL = """
+CREATE TABLE IF NOT EXISTS admins (
+    telegram_id INTEGER NULL UNIQUE,
+    username TEXT NULL UNIQUE
+);
+"""
+
 
 async def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(INIT_SQL)
         await db.executescript(INIT_VISITS_SQL)
+        await db.executescript(INIT_ADMINS_SQL)
         await db.commit()
     for col in ("left_at", "source"):
         try:
@@ -46,7 +54,66 @@ async def init_db() -> None:
                 await db.execute(f"ALTER TABLE participants ADD COLUMN {col} TEXT NULL")
                 await db.commit()
         except aiosqlite.OperationalError:
-            pass  # колонка уже есть
+            pass
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.executescript(INIT_ADMINS_SQL)
+            await db.commit()
+    except aiosqlite.OperationalError:
+        pass  # таблица admins уже есть
+
+
+# --- Дополнительные админы (добавляются через бота) ---
+
+async def get_all_admin_ids() -> list:
+    """ID всех админов: из config + из таблицы admins."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT telegram_id FROM admins WHERE telegram_id IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+    return list(CONFIG_ADMIN_IDS) + [r[0] for r in rows]
+
+
+async def get_admin_usernames() -> list:
+    """Username'ы админов из таблицы (без @, lowercase)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT username FROM admins WHERE username IS NOT NULL"
+        )
+        rows = await cursor.fetchall()
+    return [(r[0] or "").strip().lower() for r in rows if (r[0] or "").strip()]
+
+
+async def add_admin_by_id(telegram_id: int) -> bool:
+    """Добавить админа по ID. Возвращает True если добавлен, False если уже есть."""
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO admins (telegram_id, username) VALUES (?, NULL)",
+                (telegram_id,),
+            )
+            await db.commit()
+        return True
+    except aiosqlite.IntegrityError:
+        return False
+
+
+async def add_admin_by_username(username: str) -> bool:
+    """Добавить админа по username (без @). Возвращает True если добавлен."""
+    username = (username or "").strip().lstrip("@").lower()
+    if not username:
+        return False
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO admins (telegram_id, username) VALUES (NULL, ?)",
+                (username,),
+            )
+            await db.commit()
+        return True
+    except aiosqlite.IntegrityError:
+        return False
 
 
 async def get_participant_by_telegram_id(telegram_id: int) -> Optional[dict]:
