@@ -16,5 +16,7 @@ ADMIN_IDS = [7392364029]
 BOT_USERNAME = (os.getenv("BOT_USERNAME", "risetestq_bot") or "risetestq_bot").strip().lstrip("@")
 
 DB_PATH = Path(__file__).resolve().parent / "participants.db"
+# Таймаут ожидания блокировки БД (сек). При большой нагрузке увеличь до 20–30.
+DB_TIMEOUT = 15
 # Файл чек-листа (бонус после регистрации). Положи checklist.txt в папку проекта или укажи свой путь.
 CHECKLIST_PATH = Path(__file__).resolve().parent / "checklist.txt"

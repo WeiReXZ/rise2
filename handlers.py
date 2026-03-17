@@ -1,6 +1,7 @@
 """
 Обработчики бота: приветствие, анкета (имя, возраст, деятельность, цель), запрос телефона, завершение.
 """
+import asyncio
 from aiogram import types
 from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters import BoundFilter
@@ -77,6 +78,8 @@ MY_NUMBER_YES = "Ваш номер участника: №{participant_number}."
 LEFT_CONTEST = "Вы вышли из конкурса. Спасибо за участие. Повторная регистрация невозможна."
 ALREADY_LEFT = "Вы уже вышли из конкурса. Повторная регистрация невозможна."
 
+FALLBACK_MSG = "Не понял. Нажмите /start для начала или выберите пункт в меню."
+
 
 def kb_remove():
     return ReplyKeyboardRemove()
@@ -139,8 +142,7 @@ class IsAdmin(BoundFilter):
     async def check(self, message: types.Message):
         if not message.from_user:
             return False
-        admin_ids = await get_all_admin_ids()
-        admin_usernames = await get_admin_usernames()
+        admin_ids, admin_usernames = await asyncio.gather(get_all_admin_ids(), get_admin_usernames())
         user = message.from_user
         user_is_admin = (
             user.id in admin_ids
@@ -177,8 +179,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await add_visit(user.id, start_payload)
     await state.update_data(source=start_payload)
     # Админ видит кнопки сразу, даже если ещё не регистрировался
-    admin_ids = await get_all_admin_ids()
-    admin_usernames = await get_admin_usernames()
+    admin_ids, admin_usernames = await asyncio.gather(get_all_admin_ids(), get_admin_usernames())
     if user.id in admin_ids or (user.username and user.username.lower() in admin_usernames):
         await message.answer("Вы админ. Используйте кнопки ниже.", reply_markup=kb_admin_menu())
     await message.answer(WELCOME)
@@ -272,8 +273,7 @@ async def survey_phone_contact(message: types.Message, state: FSMContext):
         source=source,
     )
     await state.finish()
-    admin_ids = await get_all_admin_ids()
-    admin_usernames = await get_admin_usernames()
+    admin_ids, admin_usernames = await asyncio.gather(get_all_admin_ids(), get_admin_usernames())
     is_admin = user.id in admin_ids or (user.username and user.username.lower() in admin_usernames)
     markup = kb_admin_menu() if is_admin else kb_user_menu()
     await message.answer(
@@ -296,8 +296,9 @@ async def survey_phone_text(message: types.Message, state: FSMContext):
     await message.answer("Пожалуйста, нажмите кнопку ниже и отправьте номер телефона.", reply_markup=kb_phone())
 
 
-# --- Админ: выгрузка в Excel (по команде /export или кнопке) ---
+# --- Админ: выгрузка в Excel (в фоне, чтобы не блокировать ответы другим) ---
 async def cmd_export(message: types.Message):
+    import asyncio
     from export_excel import build_excel_bytes
 
     participants = await get_all_participants()
@@ -305,14 +306,19 @@ async def cmd_export(message: types.Message):
     if not participants and not visitors:
         await message.answer("Нет данных для выгрузки.", reply_markup=kb_admin_menu())
         return
+    await message.answer("Формирую файл…", reply_markup=kb_admin_menu())
+    loop = asyncio.get_event_loop()
     try:
-        buf = build_excel_bytes(participants, visitors)
+        buf = await loop.run_in_executor(
+            None,
+            lambda: build_excel_bytes(participants, visitors),
+        )
         cap = f"Участники: {len(participants)}. Визиты без регистрации: {len(visitors)}."
         await message.answer_document(
             types.InputFile(buf, filename="participants.xlsx"),
             caption=cap,
         )
-        await message.answer("Готово. Что дальше?", reply_markup=kb_admin_menu())
+        await message.answer("Готово.", reply_markup=kb_admin_menu())
     except Exception as e:
         await message.answer(f"Ошибка выгрузки: {e}", reply_markup=kb_admin_menu())
 
@@ -372,7 +378,9 @@ async def cmd_search_result(message: types.Message, state: FSMContext):
             reply_markup=kb_admin_menu(),
         )
         return
-    for p in participants:
+    for i, p in enumerate(participants):
+        if i > 0 and len(participants) > 5:
+            await asyncio.sleep(0.04)
         left = p.get("left_at") or "—"
         username = (p.get("username") or "").strip()
         username = ("@" + username) if username else "—"
@@ -509,3 +517,9 @@ async def cmd_stats(message: types.Message):
     if not visitor_stats.get("by_source") and visitor_stats["total"] == 0:
         lines.append("  — пока нет данных")
     await message.answer("\n".join(lines), reply_markup=kb_admin_menu())
+
+
+# --- Ответ на любое необработанное сообщение (чтобы никто не оставался без ответа) ---
+async def fallback_handler(message: types.Message, state: FSMContext):
+    await state.finish()
+    await message.answer(FALLBACK_MSG)

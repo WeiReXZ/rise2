@@ -35,6 +35,7 @@ from handlers import (
     cmd_add_admin_enter,
     cmd_delete_db_start,
     cmd_delete_db_confirm,
+    fallback_handler,
 )
 
 logging.basicConfig(
@@ -80,40 +81,65 @@ def setup_dispatcher(dp: Dispatcher) -> None:
     )
     dp.register_message_handler(survey_phone_text, state=Survey.phone)
 
+    # В конце: ответ на любое сообщение, которое не обработал ни один из предыдущих обработчиков
+    dp.register_message_handler(fallback_handler, state="*", content_types=[types.ContentType.ANY])
+
 
 async def main() -> None:
+    logger.info("Запуск бота...")
     await init_db()
     bot = Bot(token=BOT_TOKEN)
     storage = MemoryStorage()
-    dp = Dispatcher(bot, storage=storage)
+    dp = Dispatcher(
+        bot,
+        storage=storage,
+        run_tasks_by_default=True,
+        throttling_rate_limit=0.05,
+    )
     dp.filters_factory.bind(IsAdmin)
     setup_dispatcher(dp)
 
-    # Меню под полем ввода — не нужно вводить команды вручную
-    await bot.set_my_commands([
-        types.BotCommand("start", "Начать"),
-        types.BotCommand("mynumber", "Мой номер участника"),
-    ])
-    logger.info("Бот запущен. ADMIN_IDS: %s", ADMIN_IDS)
-    retry_delay = 10
-    while True:
+    async def errors_handler(update, exception):
+        logger.exception("Ошибка при обработке: %s", exception)
         try:
-            await dp.start_polling()
-            break
-        except (
-            aiogram_exceptions.NetworkError,
-            ConnectionError,
-            asyncio.TimeoutError,
-            OSError,
-            aiohttp.ClientError,
-        ) as e:
-            logger.warning("Сетевая ошибка (бот перезапустит через %s сек): %s", retry_delay, e)
-            await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay + 5, 60)
+            if update and getattr(update, "message", None) and update.message:
+                await update.message.answer("Произошла ошибка. Попробуйте ещё раз или /start")
+        except Exception:
+            pass
+        return True
+    dp.register_errors_handler(errors_handler)
+
+    try:
+        logger.info("Подключение к Telegram API...")
+        await bot.set_my_commands([
+            types.BotCommand("start", "Начать"),
+            types.BotCommand("mynumber", "Мой номер участника"),
+        ])
+        logger.info("Бот запущен. ADMIN_IDS: %s", ADMIN_IDS)
+        retry_delay = 10
+        while True:
+            try:
+                await dp.start_polling()
+                break
+            except (
+                aiogram_exceptions.NetworkError,
+                ConnectionError,
+                asyncio.TimeoutError,
+                OSError,
+                aiohttp.ClientError,
+            ) as e:
+                logger.warning("Сетевая ошибка (бот перезапустит через %s сек): %s", retry_delay, e)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay + 5, 60)
+            except Exception as e:
+                logger.exception("Ошибка polling: %s", e)
+                raise
+    finally:
+        try:
+            session = await bot.get_session()
+            await session.close()
         except Exception as e:
-            logger.exception("Ошибка polling: %s", e)
-            raise
-    await bot.session.close()
+            logger.debug("Закрытие сессии: %s", e)
 
 
 if __name__ == "__main__":
