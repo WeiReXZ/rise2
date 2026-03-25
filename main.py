@@ -13,6 +13,7 @@ from aiogram.utils import exceptions as aiogram_exceptions
 
 from config import BOT_TOKEN, ADMIN_IDS
 from database import init_db
+from maintenance_middleware import MaintenanceMiddleware
 from handlers import (
     Survey,
     Admin,
@@ -27,6 +28,8 @@ from handlers import (
     cmd_mynumber,
     cmd_leave_contest,
     cmd_export,
+    cmd_excel_import_start,
+    excel_import_message,
     cmd_stats,
     cmd_search_start,
     cmd_search_result,
@@ -35,8 +38,26 @@ from handlers import (
     cmd_add_admin_enter,
     cmd_delete_db_start,
     cmd_delete_db_confirm,
+    cmd_data_export_menu,
+    callback_data_export,
+    cmd_contest_open,
+    contest_hub_handler,
+    contest_input_handler,
+    cmd_maintenance_open,
+    maintenance_hub_handler,
+    maintenance_message_input_handler,
+    maintenance_allow_handler,
+    cmd_add_participant_start,
+    add_participant_tg_handler,
+    add_participant_username_handler,
+    add_participant_name_handler,
+    add_participant_age_handler,
+    add_participant_occupation_handler,
+    add_participant_goal_handler,
+    add_participant_phone_handler,
     fallback_handler,
 )
+from reminders import reminder_loop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,9 +77,20 @@ def setup_dispatcher(dp: Dispatcher) -> None:
     # Выйти из конкурса (повторная регистрация невозможна)
     dp.register_message_handler(cmd_leave_contest, Text(equals="Выйти из конкурса"), state="*")
 
+    # Сначала состояния админки розыгрыша (чтобы не перехватывались state="*")
+    dp.register_message_handler(contest_hub_handler, state=Admin.contest_hub, is_admin=True)
+    dp.register_message_handler(contest_input_handler, state=Admin.contest_input, is_admin=True)
+
     # Админ-кнопки обрабатываем в любом состоянии (state="*"), чтобы срабатывали до анкеты
     dp.register_message_handler(cmd_export, Command("export"), is_admin=True, state="*")
     dp.register_message_handler(cmd_export, Text(equals="Выгрузить Excel"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_excel_import_start, Text(equals="Импорт из Excel"), is_admin=True, state="*")
+    dp.register_message_handler(
+        excel_import_message,
+        state=Admin.excel_import,
+        is_admin=True,
+        content_types=[types.ContentType.ANY],
+    )
     dp.register_message_handler(cmd_stats, Command("stats"), is_admin=True, state="*")
     dp.register_message_handler(cmd_stats, Text(equals="Статистика"), is_admin=True, state="*")
     dp.register_message_handler(cmd_search_start, Text(equals="Поиск по номеру"), is_admin=True, state="*")
@@ -68,6 +100,27 @@ def setup_dispatcher(dp: Dispatcher) -> None:
     dp.register_message_handler(cmd_add_admin_enter, state=Admin.add_admin, is_admin=True)
     dp.register_message_handler(cmd_delete_db_start, Text(equals="Удалить базу"), is_admin=True, state="*")
     dp.register_message_handler(cmd_delete_db_confirm, state=Admin.delete_db_confirm, is_admin=True)
+    dp.register_message_handler(cmd_data_export_menu, Text(equals="Вывод данных"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_contest_open, Text(equals="Данные розыгрыша"), is_admin=True, state="*")
+    dp.register_message_handler(cmd_maintenance_open, Text(equals="Техработы и доступ"), is_admin=True, state="*")
+    dp.register_message_handler(maintenance_hub_handler, state=Admin.maintenance_hub, is_admin=True)
+    dp.register_message_handler(
+        maintenance_message_input_handler, state=Admin.maintenance_message_input, is_admin=True
+    )
+    dp.register_message_handler(maintenance_allow_handler, state=Admin.maintenance_allow, is_admin=True)
+    dp.register_message_handler(cmd_add_participant_start, Text(equals="Добавить участника"), is_admin=True, state="*")
+    dp.register_message_handler(add_participant_tg_handler, state=Admin.add_participant_tg, is_admin=True)
+    dp.register_message_handler(add_participant_username_handler, state=Admin.add_participant_username, is_admin=True)
+    dp.register_message_handler(add_participant_name_handler, state=Admin.add_participant_name, is_admin=True)
+    dp.register_message_handler(add_participant_age_handler, state=Admin.add_participant_age, is_admin=True)
+    dp.register_message_handler(add_participant_occupation_handler, state=Admin.add_participant_occupation, is_admin=True)
+    dp.register_message_handler(add_participant_goal_handler, state=Admin.add_participant_goal, is_admin=True)
+    dp.register_message_handler(add_participant_phone_handler, state=Admin.add_participant_phone, is_admin=True)
+    dp.register_callback_query_handler(
+        callback_data_export,
+        lambda c: c.data and str(c.data).startswith("de_"),
+        state="*",
+    )
 
     # Анкета по шагам
     dp.register_message_handler(survey_name, state=Survey.name)
@@ -97,6 +150,7 @@ async def main() -> None:
         throttling_rate_limit=0.05,
     )
     dp.filters_factory.bind(IsAdmin)
+    dp.setup_middleware(MaintenanceMiddleware())
     setup_dispatcher(dp)
 
     async def errors_handler(update, exception):
@@ -109,6 +163,7 @@ async def main() -> None:
         return True
     dp.register_errors_handler(errors_handler)
 
+    reminder_task = None
     try:
         logger.info("Подключение к Telegram API...")
         await bot.set_my_commands([
@@ -116,6 +171,7 @@ async def main() -> None:
             types.BotCommand("mynumber", "Мой номер участника"),
         ])
         logger.info("Бот запущен. ADMIN_IDS: %s", ADMIN_IDS)
+        reminder_task = asyncio.create_task(reminder_loop(bot))
         retry_delay = 10
         while True:
             try:
@@ -135,6 +191,12 @@ async def main() -> None:
                 logger.exception("Ошибка polling: %s", e)
                 raise
     finally:
+        if reminder_task is not None:
+            reminder_task.cancel()
+            try:
+                await reminder_task
+            except asyncio.CancelledError:
+                pass
         try:
             session = await bot.get_session()
             await session.close()
